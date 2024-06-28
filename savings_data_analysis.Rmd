@@ -1,0 +1,475 @@
+---
+title: "Savings data analysis"
+author: "Data and Insights"
+date: "`r Sys.Date()`"
+output:
+  word_document:
+    toc: yes
+    toc_depth: '4'
+  html_document:
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+    toc_collapsed: yes
+---
+
+```{=html}
+<style>
+body, p {
+  background-color: white;
+  color: black; 
+  font-family: Trebuchet MS;
+}
+</style>
+```
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r importing libraries and dataset, echo=FALSE}
+
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(fuzzyjoin)
+library(lexRankr)
+library(tidytext)
+library(textrank)
+library(openxlsx)
+library(readxl)
+library(tm)
+library(wordcloud)
+library(wordcloud2)
+library(gt)
+library(gridExtra)
+library(janitor)
+library(caret)
+library(factoextra)
+library(NbClust)
+library(clValid)
+library(kableExtra)
+library(tidycomm)
+library(colorspace)
+library(ragg)
+library(psych)
+
+setwd("D:/MSC Projects/Bangladesh diaries/Analysis/Credit_savings")
+
+analysis_dataset <- read_excel("D:/MSC Projects/Bangladesh diaries/Analysis/Credit_savings/savings_survey_round_2_final.xlsx", sheet = "final")
+ID_cols <- c("Name_clean", "Diarist Name")
+
+```
+
+```{r creating functions, results='asis'}
+
+fun_mcq_split_table <- function(dataset, variable_name, splitter){
+group_wise_data_summary <-   
+  dataset%>%
+    dplyr::select(!!sym(variable_name))%>%
+    separate_rows(!!sym(variable_name), sep = splitter)%>%
+    dplyr::filter(!is.na(!!sym(variable_name)))%>%
+    group_by(!!sym(variable_name))%>%
+    dplyr::summarise(category_count = n())%>%
+  ungroup()%>%
+  mutate(category_percent = round((category_count*100)/
+           nrow(dataset%>%
+                  dplyr::filter(!is.na(!!sym(variable_name)))),3))
+
+return(group_wise_data_summary)
+}
+
+
+fun_mcq_split_plot <- function(dataset, variable_name, splitter){
+group_wise_data_summary <-   
+  dataset%>%
+    dplyr::select(!!sym(variable_name))%>%
+    separate_rows(!!sym(variable_name), sep = ";")%>%
+    dplyr::filter(!is.na(!!sym(variable_name)))%>%
+    group_by(!!sym(variable_name))%>%
+    dplyr::summarise(category_count = n())%>%
+  ungroup()%>%
+  mutate(category_percent = round((category_count*100)/
+           nrow(dataset%>%
+                  dplyr::filter(!is.na(!!sym(variable_name)))),3))
+
+mcq_plot_out <-
+  ggplot(group_wise_data_summary,
+       aes(x = !!sym(variable_name) , y = category_percent, labels = !!sym(variable_name)))+
+geom_bar(position = "dodge", stat = "identity", colour = "#284181", fill = "#284181") +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10))+
+  ggtitle(paste(variable_name, "in percentage", sep = " "))+ 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+  geom_text(aes(label = category_percent), position=position_dodge(width=0.9), vjust=-0.25)
+
+print(mcq_plot_out)
+}
+
+
+outlier_treament_fun <- function(dataset, variable_name, limit = 3){
+  
+  na_free_dataset <- 
+    dataset%>%
+    dplyr::filter(!is.na(!!sym(variable_name)))%>%
+                    dplyr::filter(!!sym(variable_name)<=
+                                    (quantile(!!sym(variable_name),0.75)+
+                                       limit*((quantile(!!sym(variable_name),0.75)-quantile(!!sym(variable_name),0.25)))) &
+                                    !!sym(variable_name)>=
+                                    (quantile(!!sym(variable_name),0.25)-
+                                       limit*((quantile(!!sym(variable_name),0.75)-quantile(!!sym(variable_name),0.25))))
+                    ) 
+                  
+                  
+  
+  return(na_free_dataset)
+  
+}  
+
+  
+fun_numeric_univ_graph <- function(dataset, variable_name){
+
+  
+out_cleaned <- outlier_treament_fun(dataset, variable_name)  
+  
+univ_numeric_plot <- 
+out_cleaned%>%
+  dplyr::select(!!sym(variable_name))%>%
+  na.omit()%>%
+ggplot(aes(y = !!sym(variable_name))) + 
+  ggdist::stat_halfeye(
+    adjust = .5, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2, 
+    point_colour = "#284181",
+    colour = "#284181",
+    fill = "#284181"
+  ) + 
+  geom_boxplot(color = "black", fill = "#284181",
+    width = .15, 
+    outlier.shape = NA
+  ) +
+  gghalves::geom_half_point(
+    side = "l", 
+    range_scale = .4, 
+    alpha = .2,
+    colour = "#284181"
+  )+  
+  ggtitle(str_remove_all(paste(c(variable_name,"distribution", sep = " ")),"_final"))+ 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"),
+        axis.text.y=element_text(color = "black", size=11, angle=30, vjust=.8, hjust=0.8),
+        axis.text.x = element_blank(),
+        axis.title.x=element_blank())
+
+
+print(univ_numeric_plot)
+}
+
+
+fun_numeric_biv_graph <- function(dataset, dependant_var, independant_var){
+
+  
+  pal <- c("#284181", "#00bfdf", "#f79433", "#fdb913", "#5a5a5a", "steelblue")
+  
+out_cleaned <- outlier_treament_fun(dataset, independant_var)  
+
+biv_numeric_plot <- 
+  out_cleaned%>%
+  dplyr::select(!!sym(dependant_var), !!sym(independant_var))%>%
+  na.omit()%>%
+  ggplot(aes(x = !!sym(dependant_var), y = !!sym(independant_var),fill = !!sym(dependant_var))) +
+  ggdist::stat_halfeye(
+    aes(color = !!sym(dependant_var),
+        fill = after_scale(lighten(color, .5))),
+    adjust = .5, 
+    width = .75, 
+    .width = 0,
+    justification = -.4, 
+    point_color = NA) + 
+  geom_boxplot(
+    aes(color = !!sym(dependant_var),
+        color = after_scale(darken(color, .1, space = "HLS")),
+        fill = after_scale(desaturate(lighten(color, .8), .4))),
+    width = .42, 
+    outlier.shape = NA
+  )  + 
+  coord_flip(xlim = c(1.2, NA), clip = "off") +
+  scale_color_manual(values = pal, guide = "none") +
+  scale_fill_manual(values = pal, guide = "none") +
+  ggtitle(str_remove_all(paste(c(independant_var,"distribution by", dependant_var, sep = " ")),"_final"))+ 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"),
+        axis.text.y=element_text(color = "black", size=11, angle=30, vjust=.8, hjust=0.8),
+        axis.title.x=element_blank())
+
+
+return(biv_numeric_plot)
+}
+
+
+
+
+fun_numeric_categorical_biv_table <- function(dataset, dependant_var, independant_var, delimiter = ";"){
+  
+  
+  
+  out_cleaned <- outlier_treament_fun(dataset, dependant_var)  
+  
+  biv_numeric_table <- 
+    out_cleaned%>%
+    dplyr::select(!!sym(dependant_var), !!sym(independant_var))%>%
+    na.omit()%>%
+    separate_rows(!!independant_var, sep = delimiter)%>%
+    group_by(!!sym(independant_var))%>%
+    dplyr::summarise(mean_val = round(mean(!!!sym(dependant_var)),2), 
+                     median_val = round(median(!!!sym(dependant_var)),2),
+                     standard_dev = round(sd(!!!sym(dependant_var)),2),
+                     skewness = round(skew(!!!sym(dependant_var)),2),
+                     kurtosis = round(kurtosi(!!!sym(dependant_var)),2),
+                     valid_n = n())%>%
+    ungroup()  
+  return(biv_numeric_table)
+}
+
+fun_numeric_univ_table <- function(dataset, variable_name){
+  
+univ_numeric_table_total <-
+  dataset%>%
+  dplyr::select(!!sym(variable_name))%>%
+  na.omit()%>%
+  dplyr::summarise(mean_val = round(mean(!!sym(variable_name)),2), 
+                   median_val = round(median(!!sym(variable_name)),2),
+                   standard_dev = round(sd(!!sym(variable_name)),2),
+                   skewness = round(skew(!!sym(variable_name)),2),
+                   kurtosis = round(kurtosi(!!sym(variable_name)),2),
+                   valid_n = n())%>%
+  ungroup()
+
+univ_outlier_cleaned <- outlier_treament_fun(dataset, variable_name)
+
+univ_numeric_table_out_cleaned <-
+  univ_outlier_cleaned%>%
+  dplyr::select(!!sym(variable_name))%>%
+  na.omit()%>%
+  dplyr::summarise(mean_val = round(mean(!!!sym(variable_name)),2), 
+                   median_val = round(median(!!!sym(variable_name)),2),
+                   standard_dev = round(sd(!!!sym(variable_name)),2),
+                   skewness = round(skew(!!!sym(variable_name)),2),
+                   kurtosis = round(kurtosi(!!!sym(variable_name)),2),
+                   valid_n = n())%>%
+  ungroup()
+
+univ_numeric_table <- cbind(tibble("dataset_type" = c("Total_data", "Outlier_cleaned")),
+                            rbind(univ_numeric_table_total, univ_numeric_table_out_cleaned))
+
+
+
+
+return(univ_numeric_table)
+}
+
+fun_cat_biv_table <- function(dataset_biv, col_name, demorg_var, delimiter){
+
+out_data <-    
+  left_join(
+dataset_biv%>%
+  dplyr::select(!!sym(col_name), !!sym(demorg_var))%>%
+  na.omit()%>%
+  separate_rows(!!col_name, sep = delimiter)%>%
+  group_by(!!sym(col_name), !!sym(demorg_var))%>%
+  dplyr::summarise(candidate_count = n())%>%
+    ungroup(),
+ dataset_biv%>%
+  dplyr::select(!!sym(col_name), !!sym(demorg_var))%>%
+  na.omit()%>%
+  group_by(!!sym(demorg_var))%>%
+  dplyr::summarise(category_count = n())%>%
+    ungroup()
+)%>%
+  mutate(candidate_perc = round((candidate_count*100)/category_count,2))
+
+return(out_data)
+}
+
+
+fun_cat_biv_graph <- function(dataset_biv, col_name, demorg_var, delimiter){
+
+out_data <-    
+  left_join(
+dataset_biv%>%
+  dplyr::select(!!sym(col_name), !!sym(demorg_var))%>%
+  na.omit()%>%
+  separate_rows(!!col_name, sep = delimiter)%>%
+  group_by(!!sym(col_name), !!sym(demorg_var))%>%
+  dplyr::summarise(candidate_count = n())%>%
+    ungroup(),
+ dataset_biv%>%
+  dplyr::select(!!sym(col_name), !!sym(demorg_var))%>%
+  na.omit()%>%
+  group_by(!!sym(demorg_var))%>%
+  dplyr::summarise(category_count = n())%>%
+    ungroup()
+)%>%
+  mutate(candidate_perc = round((candidate_count*100)/category_count,0))
+
+if(nrow(out_data%>%dplyr::select(!!sym(col_name))%>%distinct())>14){
+  print("more than 15 unique categories, graph not possible")}
+else{
+plot_out <- 
+ggplot(out_data, 
+       aes(fill=!!sym(col_name), y=candidate_perc, 
+                     x=!!sym(demorg_var), label = candidate_perc)) + 
+  geom_bar(stat="identity", position = "dodge")+
+  geom_text(
+    aes(label = candidate_perc, candidate_perc = candidate_perc + 0.05),
+    position = position_dodge(0.9),
+    vjust = 0)+
+  coord_flip()+
+  scale_fill_manual(values=c("#fdb913", "#00bfdf", "#284181", "#f79433", "#5a5a5a", "steelblue", "gray", "orange", "darkgreen", "red", "pink", "grey", "darkgrey", "lightgrey", "blue"))+  
+  ggtitle(paste(c(demorg_var,"and",col_name, "crosstab"), sep = " "))+ 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"),
+        axis.text.y=element_text(color = "black", size=11, angle=30, vjust=.8, hjust=0.8))
+
+return(plot_out)}
+}
+
+```
+
+# Univariate Analysis
+
+## Numerical Variables
+
+```{r creating list of numeric variables}
+numeric_var <- as_tibble(names(analysis_dataset%>%
+                                 dplyr::select_if(is.numeric)))%>%
+                                     dplyr::filter(!value %in% ID_cols)
+
+output_list_num_univ <- list()
+
+for (i in 1:length(unique(numeric_var$value))) {
+  output_list_num_univ[[i]] <- fun_numeric_univ_table(analysis_dataset, numeric_var$value[i])
+}
+
+```
+
+```{r printing output univariate numeric, echo=FALSE, results='asis', fig.width=10, fig.height=10}
+
+
+for(i in 1:length(unique(numeric_var$value))) {
+
+  cat(paste0("\n\n### ", numeric_var$value[i], "\n\n\n"))
+  
+  fun_numeric_univ_graph(analysis_dataset, numeric_var$value[i])
+  
+
+#  print(gt::gt(output_list_num_univ[[i]])%>% tab_options(.,container.width = 250, container.height =250))
+  print(knitr::kable(output_list_num_univ[[i]]))
+  
+}
+
+```
+
+## Categorical Variables
+
+```{r creating list of categorical variables, results='asis'}
+categorical_var <- as_tibble(names(analysis_dataset%>%
+                                     select_if(is.character)))%>%
+                                     dplyr::filter(!value %in% ID_cols)
+output_list_cat_univ <- list()
+
+
+for (i in 1:length(unique(categorical_var$value))) {
+  output_list_cat_univ[[i]] <- fun_mcq_split_table(analysis_dataset, categorical_var$value[i], ";")
+}
+```
+
+```{r printing output univariate categorical, echo=FALSE, results='asis'}
+
+for(i in 1:length(unique(categorical_var$value))) {
+
+  cat(paste0("\n\n### ", categorical_var$value[i], "\n\n\n"))
+  
+  cat(paste0("\n\n#### ", "Distribution Graph", "\n\n"))
+  
+  fun_mcq_split_plot(analysis_dataset, categorical_var$value[i], ";")
+  
+  print(knitr::kable(output_list_cat_univ[[i]]))
+}
+
+
+```
+
+
+# Bivariate Analysis
+
+## Categorical - categorical Variables
+
+```{r creating bivariate data 2 categorical variable names, echo=FALSE}
+demorg_names <- names(analysis_dataset %>%
+  dplyr::select(matches("demorg|independant"))%>%
+  select_if(is.character))
+
+
+variable_names <- names(analysis_dataset%>%
+  dplyr::select(!matches("demorg|independant"))%>%
+        dplyr::select(-ID_cols)%>%
+  select_if(is.character))
+
+```
+
+
+
+
+
+```{r crosstab 2 categorical vars, echo=FALSE, fig.height=10, fig.width=10, results='asis'}
+
+for (i in 1:length(demorg_names)){
+    cat(paste0("\n\n### ", demorg_names[i], "\n\n\n"))
+  for (j in 1:length(variable_names)) {
+    
+  print(fun_cat_biv_graph(analysis_dataset, variable_names[j], demorg_names[i], ";"))
+  
+  print(knitr::kable(fun_cat_biv_table(analysis_dataset, variable_names[j], demorg_names[i], ";")))  
+  
+  }
+}
+
+```
+
+
+
+## Categorical - numerical Variables
+
+```{r creating bivariate data categorical numeric variable names, echo=FALSE}
+demorg_names <- names(analysis_dataset %>%
+  dplyr::select(matches("demorg|independant"))%>%
+  select_if(is.character))
+
+
+variable_names <- names(analysis_dataset%>%
+  dplyr::select(!matches("demorg|independant"))%>%
+        dplyr::select(-ID_cols)%>%
+  select_if(is.numeric))
+
+```
+
+
+
+
+
+```{r crosstab categorical numeric vars, echo=FALSE, fig.height=10, fig.width=10, results='asis'}
+
+for (i in 1:length(demorg_names)){
+    cat(paste0("\n\n### ", demorg_names[i], "\n\n\n"))
+  for (j in 1:length(variable_names)) {
+    
+  print(fun_numeric_biv_graph(analysis_dataset, demorg_names[i], variable_names[j]))
+
+  print(knitr::kable(fun_numeric_categorical_biv_table(analysis_dataset, variable_names[j], demorg_names[i])))  
+  
+  }
+}
+
+```
